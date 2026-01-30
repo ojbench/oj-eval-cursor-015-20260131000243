@@ -16,12 +16,13 @@ const int64_t HEADER_SIZE = (int64_t)NUM_BUCKETS * 8;
 // Node: next(8) + index(64) + value(4) = 76 bytes
 const int NODE_SIZE = 8 + INDEX_KEY_SIZE + sizeof(int);
 
-inline int64_t hashIndex(const char* index, size_t len) {
-    uint64_t h = 0;
+inline uint64_t hashIndex(const char* index, size_t len) {
+    uint64_t h = 14695981039346656037ULL;
     for (size_t i = 0; i < len; i++) {
-        h = h * 31 + (unsigned char)index[i];
+        h ^= (unsigned char)index[i];
+        h *= 1099511628211ULL;
     }
-    return (int64_t)(h % NUM_BUCKETS);
+    return h % NUM_BUCKETS;
 }
 
 void indexToBytes(const std::string& index, char* out) {
@@ -63,8 +64,7 @@ int main() {
             std::cin >> index >> value;
             char keyBuf[INDEX_KEY_SIZE];
             indexToBytes(index, keyBuf);
-            int64_t bucket = hashIndex(keyBuf, index.size());
-            if (bucket < 0) bucket = -bucket;
+            uint64_t bucket = hashIndex(keyBuf, index.size());
 
             // Read current bucket head
             file.seekg(bucket * 8);
@@ -85,14 +85,13 @@ int main() {
             std::cin >> index >> value;
             char keyBuf[INDEX_KEY_SIZE];
             indexToBytes(index, keyBuf);
-            int64_t bucket = hashIndex(keyBuf, index.size());
-            if (bucket < 0) bucket = -bucket;
+            uint64_t bucket = hashIndex(keyBuf, index.size());
 
             file.seekg(bucket * 8);
             int64_t head;
             file.read(reinterpret_cast<char*>(&head), 8);
 
-            int64_t prevOffset = bucket * 8;  // "prev" is header slot
+            int64_t prevOffset = (int64_t)(bucket * 8);  // "prev" is header slot
             int64_t curOffset = head;
             while (curOffset != NULL_OFFSET) {
                 file.seekg(curOffset);
@@ -117,8 +116,7 @@ int main() {
             std::cin >> index;
             char keyBuf[INDEX_KEY_SIZE];
             indexToBytes(index, keyBuf);
-            int64_t bucket = hashIndex(keyBuf, index.size());
-            if (bucket < 0) bucket = -bucket;
+            uint64_t bucket = hashIndex(keyBuf, index.size());
 
             std::vector<int> values;
             file.seekg(bucket * 8);
