@@ -8,7 +8,7 @@
 
 const char* INDEX_FILE = "data.bin";
 const int INDEX_KEY_SIZE = 64;
-const int NUM_BUCKETS = 65536;
+const int NUM_BUCKETS = 262144;  // 2^18, smaller chains for large tests
 const int64_t NULL_OFFSET = -1;
 
 // Header: NUM_BUCKETS * 8 bytes (each bucket head offset)
