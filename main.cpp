@@ -81,7 +81,6 @@ int main() {
             // Update bucket head
             file.seekp(bucket * 8);
             file.write(reinterpret_cast<const char*>(&newOffset), 8);
-            file.flush();
         } else if (cmd == "delete") {
             std::cin >> index >> value;
             char keyBuf[INDEX_KEY_SIZE];
@@ -108,7 +107,6 @@ int main() {
                     // Unlink: write nextOff to prev
                     file.seekp(prevOffset);
                     file.write(reinterpret_cast<const char*>(&nextOff), 8);
-                    file.flush();
                     break;
                 }
                 prevOffset = curOffset;
@@ -156,5 +154,6 @@ int main() {
         }
     }
 
+    file.flush();
     return 0;
 }
