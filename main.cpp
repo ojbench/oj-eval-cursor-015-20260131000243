@@ -4,49 +4,52 @@
 #include <vector>
 #include <algorithm>
 #include <cstring>
+#include <cstdint>
 
-const char* DATA_FILE = "data.bin";
-const int INDEX_SIZE = 64;
-const int RECORD_SIZE = 1 + INDEX_SIZE + sizeof(int);  // deleted + index + value
+const char* INDEX_FILE = "data.bin";
+const int INDEX_KEY_SIZE = 64;
+const int NUM_BUCKETS = 65536;
+const int64_t NULL_OFFSET = -1;
 
-struct Record {
-    bool deleted;
-    char index[INDEX_SIZE];
-    int value;
-};
+// Header: NUM_BUCKETS * 8 bytes (each bucket head offset)
+const int64_t HEADER_SIZE = (int64_t)NUM_BUCKETS * 8;
+// Node: next(8) + index(64) + value(4) = 76 bytes
+const int NODE_SIZE = 8 + INDEX_KEY_SIZE + sizeof(int);
 
-void writeRecord(std::fstream& file, const Record& rec) {
-    file.write(reinterpret_cast<const char*>(&rec.deleted), 1);
-    file.write(rec.index, INDEX_SIZE);
-    file.write(reinterpret_cast<const char*>(&rec.value), sizeof(int));
-}
-
-void readRecord(std::fstream& file, Record& rec) {
-    file.read(reinterpret_cast<char*>(&rec.deleted), 1);
-    file.read(rec.index, INDEX_SIZE);
-    file.read(reinterpret_cast<char*>(&rec.value), sizeof(int));
+inline int64_t hashIndex(const char* index, size_t len) {
+    uint64_t h = 0;
+    for (size_t i = 0; i < len; i++) {
+        h = h * 31 + (unsigned char)index[i];
+    }
+    return (int64_t)(h % NUM_BUCKETS);
 }
 
 void indexToBytes(const std::string& index, char* out) {
-    memset(out, 0, INDEX_SIZE);
-    size_t len = std::min(index.size(), (size_t)INDEX_SIZE);
+    memset(out, 0, INDEX_KEY_SIZE);
+    size_t len = std::min(index.size(), (size_t)INDEX_KEY_SIZE);
     memcpy(out, index.c_str(), len);
 }
 
 bool indexMatch(const char* a, const std::string& b) {
-    size_t len = std::min(b.size(), (size_t)INDEX_SIZE);
-    return memcmp(a, b.c_str(), len) == 0 && (b.size() >= INDEX_SIZE || a[len] == 0);
+    size_t len = std::min(b.size(), (size_t)INDEX_KEY_SIZE);
+    if (memcmp(a, b.c_str(), len) != 0) return false;
+    return b.size() >= INDEX_KEY_SIZE || a[len] == 0;
 }
 
 int main() {
     std::ios::sync_with_stdio(false);
     std::cin.tie(nullptr);
 
-    std::fstream file(DATA_FILE, std::ios::in | std::ios::out | std::ios::binary);
+    std::fstream file(INDEX_FILE, std::ios::in | std::ios::out | std::ios::binary);
     if (!file) {
-        file.open(DATA_FILE, std::ios::out | std::ios::binary);
+        file.open(INDEX_FILE, std::ios::out | std::ios::binary);
+        // Write initial header: all NULL_OFFSET
+        for (int i = 0; i < NUM_BUCKETS; i++) {
+            int64_t v = NULL_OFFSET;
+            file.write(reinterpret_cast<const char*>(&v), 8);
+        }
         file.close();
-        file.open(DATA_FILE, std::ios::in | std::ios::out | std::ios::binary);
+        file.open(INDEX_FILE, std::ios::in | std::ios::out | std::ios::binary);
     }
 
     int n;
@@ -58,41 +61,88 @@ int main() {
         std::cin >> cmd;
         if (cmd == "insert") {
             std::cin >> index >> value;
-            Record rec;
-            rec.deleted = false;
-            indexToBytes(index, rec.index);
-            rec.value = value;
+            char keyBuf[INDEX_KEY_SIZE];
+            indexToBytes(index, keyBuf);
+            int64_t bucket = hashIndex(keyBuf, index.size());
+            if (bucket < 0) bucket = -bucket;
+
+            // Read current bucket head
+            file.seekg(bucket * 8);
+            int64_t head;
+            file.read(reinterpret_cast<char*>(&head), 8);
+
+            // Append new node at end
             file.seekp(0, std::ios::end);
-            writeRecord(file, rec);
+            int64_t newOffset = file.tellp();
+            file.write(reinterpret_cast<const char*>(&head), 8);  // next
+            file.write(keyBuf, INDEX_KEY_SIZE);
+            file.write(reinterpret_cast<const char*>(&value), sizeof(int));
+
+            // Update bucket head
+            file.seekp(bucket * 8);
+            file.write(reinterpret_cast<const char*>(&newOffset), 8);
             file.flush();
         } else if (cmd == "delete") {
             std::cin >> index >> value;
-            file.seekg(0, std::ios::beg);
-            Record rec;
-            while (file.peek() != EOF) {
-                std::streampos pos = file.tellg();
-                readRecord(file, rec);
-                if (!rec.deleted && indexMatch(rec.index, index) && rec.value == value) {
-                    rec.deleted = true;
-                    file.seekp(pos);
-                    writeRecord(file, rec);
+            char keyBuf[INDEX_KEY_SIZE];
+            indexToBytes(index, keyBuf);
+            int64_t bucket = hashIndex(keyBuf, index.size());
+            if (bucket < 0) bucket = -bucket;
+
+            file.seekg(bucket * 8);
+            int64_t head;
+            file.read(reinterpret_cast<char*>(&head), 8);
+
+            int64_t prevOffset = bucket * 8;  // "prev" is header slot
+            int64_t curOffset = head;
+            while (curOffset != NULL_OFFSET) {
+                file.seekg(curOffset);
+                int64_t nextOff;
+                char curKey[INDEX_KEY_SIZE];
+                int curVal;
+                file.read(reinterpret_cast<char*>(&nextOff), 8);
+                file.read(curKey, INDEX_KEY_SIZE);
+                file.read(reinterpret_cast<char*>(&curVal), sizeof(int));
+
+                if (indexMatch(curKey, index) && curVal == value) {
+                    // Unlink: write nextOff to prev
+                    file.seekp(prevOffset);
+                    file.write(reinterpret_cast<const char*>(&nextOff), 8);
                     file.flush();
                     break;
                 }
+                prevOffset = curOffset;
+                curOffset = nextOff;
             }
             file.clear();
         } else if (cmd == "find") {
             std::cin >> index;
+            char keyBuf[INDEX_KEY_SIZE];
+            indexToBytes(index, keyBuf);
+            int64_t bucket = hashIndex(keyBuf, index.size());
+            if (bucket < 0) bucket = -bucket;
+
             std::vector<int> values;
-            file.seekg(0, std::ios::beg);
-            Record rec;
-            while (file.peek() != EOF) {
-                readRecord(file, rec);
-                if (!rec.deleted && indexMatch(rec.index, index)) {
-                    values.push_back(rec.value);
+            file.seekg(bucket * 8);
+            int64_t curOffset;
+            file.read(reinterpret_cast<char*>(&curOffset), 8);
+
+            while (curOffset != NULL_OFFSET) {
+                file.seekg(curOffset);
+                int64_t nextOff;
+                char curKey[INDEX_KEY_SIZE];
+                int curVal;
+                file.read(reinterpret_cast<char*>(&nextOff), 8);
+                file.read(curKey, INDEX_KEY_SIZE);
+                file.read(reinterpret_cast<char*>(&curVal), sizeof(int));
+
+                if (indexMatch(curKey, index)) {
+                    values.push_back(curVal);
                 }
+                curOffset = nextOff;
             }
             file.clear();
+
             if (values.empty()) {
                 std::cout << "null\n";
             } else {
